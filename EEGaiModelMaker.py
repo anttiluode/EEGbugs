@@ -18,12 +18,6 @@ from PIL import Image, ImageTk
 # 0. Configuration and Parameters
 # ===============================
 
-# Define paths
-data_dir = r'G:\DocsHouse\59 eeg to imagse'  # Update as per your directory
-edf_file = os.path.join(data_dir, 'SC4001E0-PSG.edf')  # Update as per your EEG data file
-features_dir = os.path.join(data_dir, 'features')
-os.makedirs(features_dir, exist_ok=True)
-
 # Define frequency bands
 frequency_bands = {
     'delta': (0.5, 4),
@@ -146,7 +140,9 @@ class EEGDataset(Dataset):
         return self.data.shape[0]
 
     def __getitem__(self, idx):
-        return self.data[idx], self.data[idx]  # Input and target are the same for autoencoder
+        # Reshape data to [1, channels, frequency_bands] to add channel dimension
+        data = self.data[idx].unsqueeze(0)
+        return data, data  # Input and target are the same for autoencoder
 
 # ===============================
 # 4. Model Definitions
@@ -155,39 +151,63 @@ class EEGDataset(Dataset):
 class EEGAutoencoder(nn.Module):
     def __init__(self, channels=5, frequency_bands=7, latent_dim=64):
         super(EEGAutoencoder, self).__init__()
+        
+        # Encoder
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=(1, 3), padding=(0, 1)),
+            # Input shape: [batch, 1, channels, frequency_bands]
+            nn.Conv2d(1, 16, kernel_size=(3, 3), padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(1, 2)),
-            nn.Conv2d(16, 32, kernel_size=(1, 3), padding=(0, 1)),
+            nn.MaxPool2d(kernel_size=2, padding=1),
+            
+            nn.Conv2d(16, 32, kernel_size=(3, 3), padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(1, 2)),
+            nn.MaxPool2d(kernel_size=2, padding=1)
         )
-        self.flattened_dim = self._calculate_flattened_dim(channels, frequency_bands)
-        self.fc1 = nn.Linear(self.flattened_dim, latent_dim)
-        self.fc2 = nn.Linear(latent_dim, self.flattened_dim)
+        
+        # Calculate the size after convolutions
+        self.flat_size = self._get_conv_output_size(channels, frequency_bands)
+        
+        # Fully connected layers
+        self.fc_encoder = nn.Sequential(
+            nn.Linear(self.flat_size, latent_dim),
+            nn.ReLU()
+        )
+        
+        self.fc_decoder = nn.Sequential(
+            nn.Linear(latent_dim, self.flat_size),
+            nn.ReLU()
+        )
+        
+        # Decoder
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, kernel_size=(1, 2), stride=(1, 2), output_padding=(0, 1)),
+            nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2),
             nn.ReLU(),
-            nn.ConvTranspose2d(16, 1, kernel_size=(1, 2), stride=(1, 2), output_padding=(0, 1)),
-            nn.Sigmoid(),
+            nn.ConvTranspose2d(16, 1, kernel_size=2, stride=2),
+            nn.Sigmoid()
         )
 
-    def _calculate_flattened_dim(self, channels, frequency_bands):
-        test_input = torch.zeros(1, 1, channels, frequency_bands)
-        with torch.no_grad():
-            output = self.encoder(test_input)
-        return output.numel()
+    def _get_conv_output_size(self, channels, frequency_bands):
+        # Helper function to calculate the flatten size
+        x = torch.zeros(1, 1, channels, frequency_bands)
+        x = self.encoder(x)
+        return int(np.prod(x.shape))
 
     def forward(self, x):
+        # x shape: [batch, 1, channels, frequency_bands]
+        # Encode
         x = self.encoder(x)
-        x = x.view(x.size(0), -1)
-        latent = self.fc1(x)
-        x = self.fc2(latent)
-        x = x.view(x.size(0), 32, -1, 1)
+        x_flat = x.view(x.size(0), -1)
+        latent = self.fc_encoder(x_flat)
+        
+        # Decode
+        x = self.fc_decoder(latent)
+        x = x.view(x.size(0), 32, -1, -1)  # Reshape to match decoder input
         x = self.decoder(x)
-        x = x.squeeze(1)
+        
+        # Ensure output matches input dimensions
+        x = nn.functional.interpolate(x, size=(5, 7), mode='bilinear', align_corners=False)
         return x, latent
+
 
 # ===============================
 # 5. Training Functions
@@ -196,20 +216,6 @@ class EEGAutoencoder(nn.Module):
 def train_autoencoder(model, dataloader, epochs=50, learning_rate=1e-3, device='cpu', save_every=10, progress_callback=None, log_callback=None):
     """
     Trains the autoencoder model and saves checkpoints.
-
-    Parameters:
-    - model: The autoencoder model to train.
-    - dataloader: DataLoader for the training data.
-    - epochs: Number of training epochs.
-    - learning_rate: Learning rate for the optimizer.
-    - device: Device to train on ('cpu' or 'cuda').
-    - save_every: Save a checkpoint every 'save_every' epochs.
-    - progress_callback: Function to call to update progress (e.g., update progress bar).
-    - log_callback: Function to call to log messages (e.g., append to text area).
-    
-    Returns:
-    - model: Trained model.
-    - loss_history: List of loss values per epoch.
     """
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -220,10 +226,12 @@ def train_autoencoder(model, dataloader, epochs=50, learning_rate=1e-3, device='
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
+        
         for data, target in tqdm(dataloader, desc=f"Training Epoch {epoch}/{epochs}", leave=False):
+            # Data is already in shape [batch, 1, channels, frequency_bands] from Dataset
             data = data.to(device)
             target = target.to(device)
-
+            
             optimizer.zero_grad()
             output, _ = model(data)
             loss = criterion(output, target)
@@ -234,17 +242,16 @@ def train_autoencoder(model, dataloader, epochs=50, learning_rate=1e-3, device='
 
         epoch_loss = running_loss / len(dataloader.dataset)
         loss_history.append(epoch_loss)
+        
         message = f'Epoch {epoch}/{epochs}, Loss: {epoch_loss:.6f}'
         print(message)
         logging.info(message)
         if log_callback:
             log_callback(message)
 
-        # Update progress bar if callback is provided
         if progress_callback:
             progress_callback(epoch, epochs)
 
-        # Save checkpoint every 'save_every' epochs
         if epoch % save_every == 0 or epoch == epochs:
             checkpoint_path = os.path.join(features_dir, f'eeg_autoencoder_epoch_{epoch}.pth')
             torch.save(model.state_dict(), checkpoint_path)
@@ -254,11 +261,6 @@ def train_autoencoder(model, dataloader, epochs=50, learning_rate=1e-3, device='
             if log_callback:
                 log_callback(message)
 
-    message = 'Autoencoder Training complete.'
-    print(message)
-    logging.info(message)
-    if log_callback:
-        log_callback(message)
     return model, loss_history
 
 # ===============================
@@ -315,6 +317,11 @@ class EEGAIModelMakerApp:
         self.edf_file_path = tk.StringVar()
         self.training = False
         self.loss_history = []
+
+        # Determine the script's directory
+        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.features_dir = os.path.join(self.script_dir, 'features')
+        os.makedirs(self.features_dir, exist_ok=True)
 
         # Create Notebook
         self.notebook = ttk.Notebook(root)
@@ -503,7 +510,7 @@ class EEGAIModelMakerApp:
             )
 
             # Save the Final Model
-            final_model_path = os.path.join(features_dir, 'eeg_autoencoder_final.pth')
+            final_model_path = os.path.join(self.features_dir, 'eeg_autoencoder_final.pth')
             torch.save(eeg_autoencoder.state_dict(), final_model_path)
             self.log_message(f'Final model saved to {final_model_path}')
 
@@ -517,7 +524,7 @@ class EEGAIModelMakerApp:
             )
 
             # Save EEG Hidden Vectors
-            eeg_hidden_path = os.path.join(features_dir, 'eeg_hidden_vectors.npy')
+            eeg_hidden_path = os.path.join(self.features_dir, 'eeg_hidden_vectors.npy')
             np.save(eeg_hidden_path, eeg_hidden_vectors)
             self.log_message(f'EEG Hidden Vectors Saved to {eeg_hidden_path}')
 
@@ -529,7 +536,7 @@ class EEGAIModelMakerApp:
             plt.xlabel('Epoch')
             plt.ylabel('Loss (MSE)')
             plt.grid(True)
-            loss_plot_path = os.path.join(features_dir, 'training_loss.png')
+            loss_plot_path = os.path.join(self.features_dir, 'training_loss.png')
             plt.savefig(loss_plot_path)
             plt.close()
             self.log_message(f'Training loss plot saved to {loss_plot_path}')
@@ -552,7 +559,7 @@ class EEGAIModelMakerApp:
             self.load_button.state(['!disabled'])
 
     def view_model(self):
-        model_path = os.path.join(features_dir, 'eeg_autoencoder_final.pth')
+        model_path = os.path.join(self.features_dir, 'eeg_autoencoder_final.pth')
         if os.path.exists(model_path):
             try:
                 if os.name == 'nt':  # For Windows
@@ -567,7 +574,7 @@ class EEGAIModelMakerApp:
             messagebox.showerror("File Not Found", f"Model file not found at {model_path}")
 
     def view_hidden(self):
-        hidden_path = os.path.join(features_dir, 'eeg_hidden_vectors.npy')
+        hidden_path = os.path.join(self.features_dir, 'eeg_hidden_vectors.npy')
         if os.path.exists(hidden_path):
             try:
                 if os.name == 'nt':  # For Windows
@@ -582,7 +589,7 @@ class EEGAIModelMakerApp:
             messagebox.showerror("File Not Found", f"Hidden vectors file not found at {hidden_path}")
 
     def view_plot(self):
-        plot_path = os.path.join(features_dir, 'training_loss.png')
+        plot_path = os.path.join(self.features_dir, 'training_loss.png')
         if os.path.exists(plot_path):
             try:
                 if os.name == 'nt':  # For Windows
