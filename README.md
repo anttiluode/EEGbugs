@@ -1,8 +1,8 @@
-# EEG AI Project
+# EEG BUGS Project
 
 ## Overview
 
-The **EEG AI Project** is a comprehensive toolkit designed for analyzing EEG (Electroencephalography) data and visualizing intelligent simulations based on neural insights. This project comprises two main components:
+The **EEG BUGS Project** is a comprehensive toolkit designed for analyzing EEG (Electroencephalography) data and visualizing intelligent simulations based on neural insights. This project comprises two main components:
 
 1. **EEG AI Model Maker:** A tool for training an EEG autoencoder model using `.edf` files.
 2. **EEG Bug Simulator:** An interactive simulation where intelligent bugs navigate environments influenced by EEG-derived data.
