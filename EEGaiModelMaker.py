@@ -18,6 +18,12 @@ from PIL import Image, ImageTk
 # 0. Configuration and Parameters
 # ===============================
 
+# Define paths
+data_dir = r'G:\DocsHouse\59 eeg to imagse'  # Update as per your directory
+edf_file = os.path.join(data_dir, 'SC4001E0-PSG.edf')  # Update as per your EEG data file
+features_dir = os.path.join(data_dir, 'features')
+os.makedirs(features_dir, exist_ok=True)
+
 # Define frequency bands
 frequency_bands = {
     'delta': (0.5, 4),
@@ -180,6 +186,7 @@ class EEGAutoencoder(nn.Module):
         x = self.fc2(latent)
         x = x.view(x.size(0), 32, -1, 1)
         x = self.decoder(x)
+        x = x.squeeze(1)
         return x, latent
 
 # ===============================
@@ -297,7 +304,7 @@ def extract_hidden_vectors_eeg(model, dataloader, device='cpu', progress_callbac
 # 7. GUI Application
 # ===============================
 
-class EEGAIModelMaker:
+class EEGAIModelMakerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("EEG AI Model Maker")
@@ -412,7 +419,7 @@ class EEGAIModelMaker:
             "- **Autoencoder Architecture:** The model consists of convolutional and transpose convolutional layers designed to compress and reconstruct EEG data effectively.\n"
             "- **Logging:** All training activities and errors are logged in the 'eeg_autoencoder.log' file for reference.\n\n"
             "**Support:**\n"
-            "For any questions or support, please contact [Your Contact Information].\n\n"
+            "For any questions or support, please contact [your.email@example.com](mailto:your.email@example.com).\n\n"
             "Enjoy training your EEG models with ease!"
         )
 
@@ -547,21 +554,45 @@ class EEGAIModelMaker:
     def view_model(self):
         model_path = os.path.join(features_dir, 'eeg_autoencoder_final.pth')
         if os.path.exists(model_path):
-            os.startfile(model_path) if os.name == 'nt' else os.system(f'open "{model_path}"')
+            try:
+                if os.name == 'nt':  # For Windows
+                    os.startfile(model_path)
+                elif os.name == 'posix':  # For macOS and Linux
+                    os.system(f'open "{model_path}"')
+                else:
+                    messagebox.showinfo("Model Path", f"Model saved at: {model_path}")
+            except Exception as e:
+                messagebox.showerror("Error Opening Model", f"Could not open model file: {e}")
         else:
             messagebox.showerror("File Not Found", f"Model file not found at {model_path}")
 
     def view_hidden(self):
         hidden_path = os.path.join(features_dir, 'eeg_hidden_vectors.npy')
         if os.path.exists(hidden_path):
-            os.startfile(hidden_path) if os.name == 'nt' else os.system(f'open "{hidden_path}"')
+            try:
+                if os.name == 'nt':  # For Windows
+                    os.startfile(hidden_path)
+                elif os.name == 'posix':  # For macOS and Linux
+                    os.system(f'open "{hidden_path}"')
+                else:
+                    messagebox.showinfo("Hidden Vectors Path", f"Hidden vectors saved at: {hidden_path}")
+            except Exception as e:
+                messagebox.showerror("Error Opening Hidden Vectors", f"Could not open hidden vectors file: {e}")
         else:
             messagebox.showerror("File Not Found", f"Hidden vectors file not found at {hidden_path}")
 
     def view_plot(self):
         plot_path = os.path.join(features_dir, 'training_loss.png')
         if os.path.exists(plot_path):
-            os.startfile(plot_path) if os.name == 'nt' else os.system(f'open "{plot_path}"')
+            try:
+                if os.name == 'nt':  # For Windows
+                    os.startfile(plot_path)
+                elif os.name == 'posix':  # For macOS and Linux
+                    os.system(f'open "{plot_path}"')
+                else:
+                    messagebox.showinfo("Plot Path", f"Training loss plot saved at: {plot_path}")
+            except Exception as e:
+                messagebox.showerror("Error Opening Plot", f"Could not open training loss plot: {e}")
         else:
             messagebox.showerror("File Not Found", f"Training loss plot not found at {plot_path}")
 
@@ -571,5 +602,5 @@ class EEGAIModelMaker:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = EEGAIModelMaker(root)
+    app = EEGAIModelMakerApp(root)
     root.mainloop()
