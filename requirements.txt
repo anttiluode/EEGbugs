@@ -1,0 +1,8 @@
+    numpy
+    torch
+    mne
+    scipy
+    tqdm
+    matplotlib
+    pillow
+    opencv-python
