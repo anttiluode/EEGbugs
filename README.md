@@ -13,7 +13,7 @@ The **EEG BUGS Project** is a comprehensive toolkit designed for analyzing EEG (
 - **Train EEG Autoencoder:** Process EEG `.edf` files to train a convolutional autoencoder model.
 - **Configuration Options:** Customize training parameters such as epoch length, batch size, number of epochs, and learning rate.
 - **Progress Monitoring:** Real-time training progress with logs and checkpointing.
-- **Save Models:** Automatically saves model checkpoints and the final trained model.
+- **Save Models:** When the model is done download the pth model and then when you launch the EEG bugs software choose that as eeg model. (Hidden vectors file is also made)
 
 ### EEG Bug Simulator
 - **Intelligent Bugs:** Simulate bugs with configurable wave neurons that interact based on EEG data.
@@ -52,11 +52,11 @@ The **EEG BUGS Project** is a comprehensive toolkit designed for analyzing EEG (
 Before running the simulator, you need to train the EEG autoencoder model using the **EEG AI Model Maker**.
 
    cd EEGAIModelMaker
-
    
 2. **Run the Model Maker:**
  
     python eeg_ai_model_maker.py
+   
     
 4. **Configure and Train:**
 
@@ -64,7 +64,8 @@ Before running the simulator, you need to train the EEG autoencoder model using 
     - **Load EDF File:** Click the **Browse** button to select your `.edf` EEG data file.
     - **Set Parameters:** Adjust training parameters as needed (epoch length, batch size, etc.).
     - **Start Training:** Click the **Start Training** button to begin. Monitor progress through the interface.
-    - **Completion:** Upon training completion, the model (`eeg_autoencoder_final.pth`) and hidden vectors (`eeg_hidden_vectors.npy`) are saved in the `features` directory.
+    - **Completion:** Upon training completion, the model (`eeg_autoencoder_model.pth`) and hidden vectors (`hidden_vectors.npy`) can be downloaded. 
+
 
 ### 2. Run the EEG Bug Simulator
 
@@ -78,7 +79,8 @@ With the trained model, you can now launch the **EEG Bug Simulator** to visualiz
     - **Choose Input Source:** Select between using a webcam or uploading a background image.
     - **Configure Wave Neurons:** Set the number of wave neurons per bug to influence their behavior.
     - **Start Simulation:** Click the **Start Simulation** button to begin. Observe bugs interacting in real-time within the simulation canvas and discussion sidebar.
-
+    - Notice the simulation runs in its own tab.
+    - 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
