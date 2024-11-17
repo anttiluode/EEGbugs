@@ -4,6 +4,8 @@ A notebook LM Deepdive with the bugs in action video at youtube
 
 https://www.youtube.com/watch?v=_QaS5uLAeWI
 
+https://www.youtube.com/watch?v=SaQtB3XLrK4
+
 ## Overview
 
 The **EEG BUGS Project** is a comprehensive toolkit designed for analyzing EEG (Electroencephalography) data and visualizing intelligent simulations based on neural insights. This project comprises three main components:
