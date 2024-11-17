@@ -1,4 +1,8 @@
-# EEG BUGS Project
+# EEG AI MODEL POWERED BUGS Project
+
+A notebook LM Deepdive with the bugs in action video at youtube
+
+https://www.youtube.com/watch?v=_QaS5uLAeWI
 
 ## Overview
 
