@@ -89,13 +89,13 @@ With the trained model, you can now launch the **EEG Bug Simulator** to visualiz
     - **Start Simulation:** Click the **Start Simulation** button to begin. Observe bugs interacting in real-time within the simulation canvas and discussion sidebar.
     - Notice the simulation runs in its own tab.
 
-### The model file explorer 
+### The EEG model explorer
 
 run 
 
-
-
 python EEG_model_explorer.py
+
+![Analysis Tool](analysis_tool.png)
 
 The Explorer is a sophisticated tool designed to facilitate the in-depth analysis and visualization of EEG (Electroencephalography) data through the utilization of advanced machine learning models. At its core, the Explorer leverages a pre-trained EEG Autoencoder model to interpret complex neural data, transforming raw EEG signals into meaningful latent representations. This transformation is crucial for unraveling the intricate patterns and features inherent in brain activity, enabling researchers and clinicians to gain deeper insights into neurological processes.
 
