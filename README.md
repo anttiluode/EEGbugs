@@ -1,4 +1,5 @@
 # EEG AI MODEL POWERED BUGS Project
+# (ADDED 3D EEG Model explorer)
 
 A notebook LM Deepdive with the bugs in action video at youtube
 
