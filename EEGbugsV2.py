@@ -13,6 +13,8 @@ import random
 import threading
 import time
 from datetime import datetime
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to prevent exceptions
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import pygame  # For audio playback
@@ -270,6 +272,13 @@ class Bug:
         self.echo_trails = []
         self.num_waveneurons = num_waveneurons
         self.particles = []  # For particle effects
+        self.sound_neuron_index = random.randint(0, num_waveneurons - 1)
+        self.hearing_neuron_index = random.randint(0, num_waveneurons - 1)
+        self.heard_sounds = []
+        self.sound_channel = pygame.mixer.Channel(random.randint(0, 7))  # Assign each bug a different channel
+        self.sound_frequency = None  # To store the current frequency
+        self.last_sound_time = 0  # To control sound intervals
+        self.sound_interval = random.uniform(1.0, 5.0)  # Bugs will make sounds every 1-5 seconds
 
     def initialize_genetic_traits(self) -> dict:
         return {
@@ -338,26 +347,6 @@ class Bug:
             vision_signal[i % 5, i % 7] += normalized_dist
         return vision_signal
 
-    def generate_talk(self, neuron_states: np.ndarray) -> str:
-        min_val = np.min(neuron_states)
-        max_val = np.max(neuron_states)
-        # Handle the case where all neuron_states are the same
-        if max_val - min_val == 0:
-            normalized_states = np.zeros_like(neuron_states)
-        else:
-            normalized_states = (neuron_states - min_val) / (max_val - min_val)
-        # Ensure normalized_states are within [0,1]
-        normalized_states = np.clip(normalized_states, 0, 1)
-        ascii_codes = (normalized_states * (126 - 32) + 32).astype(int)
-        # Ensure ascii_codes are within valid ASCII range
-        ascii_codes = np.clip(ascii_codes, 32, 126)
-        ascii_chars = ''.join([chr(code) for code in ascii_codes])
-        return ascii_chars[:20]
-
-    def generate_draw_command(self, neuron_states: np.ndarray) -> bool:
-        avg_activation = np.mean(neuron_states)
-        return avg_activation > self.genetic_traits['draw_activation_threshold']
-
     def create_echo_trace(self, x: float, y: float):
         echo = {
             'position': (x, y),
@@ -392,7 +381,7 @@ class Bug:
         return distance < threshold
 
     def think_and_act(self, environment_input: np.ndarray, other_bugs: List['Bug'], 
-                     webcam_input: np.ndarray) -> Tuple[np.ndarray, str, List[dict]]:
+                     webcam_input: np.ndarray, mouse_position: Tuple[int, int]):
         self.avoid_others(other_bugs)
         vision_signal = self.detect_in_vision(other_bugs, webcam_input)
         combined_input = environment_input + vision_signal
@@ -414,34 +403,70 @@ class Bug:
 
         neuron_states = np.array([neuron.output for neuron in self.processor.brain.neurons])
 
-        talk_message = ""
-        if self.can_talk:
-            talk_message = f"{self.name}: {self.generate_talk(neuron_states)}"
-            self.can_talk = False
+        current_time = time.time()
+        # Produce sound only if enough time has passed
+        if current_time - self.last_sound_time > self.sound_interval:
+            # Generate sound based on sound neuron
+            self.generate_sound(neuron_states[self.sound_neuron_index], mouse_position)
+            self.last_sound_time = current_time
+            # Randomize the next sound interval
+            self.sound_interval = random.uniform(1.0, 5.0)
 
-        if self.generate_draw_command(neuron_states):
-            self.create_echo_trace(self.position[0], self.position[1])
+        # Process heard sounds
+        self.process_heard_sounds(neuron_states)
 
-        # Generate sound based on neuron activity
-        self.generate_sound(neuron_states)
+        return latent_vector, "", self.echo_trails
 
-        return latent_vector, talk_message, self.echo_trails
+    def generate_sound(self, neuron_state: float, mouse_position: Tuple[int, int]):
+        # Map neuron_state to frequency between 1000 Hz and 1500 Hz
+        frequency = 1000 + ((neuron_state + 1) / 2) * 500  # Map from [-1,1] to [1000,1500] Hz
+        self.sound_frequency = frequency  # Store the frequency for other bugs to "hear"
 
-    def generate_sound(self, neuron_states: np.ndarray):
-        avg_activation = np.mean(neuron_states)
-        frequency = 2200 + avg_activation * 2200  # Map to 2200-4400 Hz
+        # Generate sound only once and reuse
+        if not hasattr(self, 'sound_samples'):
+            self.pre_generate_sounds()
 
-        # Generate a tone
-        sample_rate = 22050
-        duration = 0.1  # seconds
-        samples = (np.sin(2 * np.pi * np.arange(sample_rate * duration) * frequency / sample_rate)).astype(np.float32)
+        # Adjust volume based on mouse proximity
+        distance_to_mouse = sqrt((self.position[0] - mouse_position[0])**2 + (self.position[1] - mouse_position[1])**2)
+        max_distance = 200  # Distance at which volume is minimal
+        volume = max(0.2, 1 - (distance_to_mouse / max_distance))  # Volume decreases with distance
+        volume = min(1.0, volume)
 
-        # Convert to sound object
-        sound_array = np.stack([samples, samples], axis=-1)  # Stereo sound
-        sound = pygame.sndarray.make_sound((sound_array * 32767).astype(np.int16))
+        # Select the closest pre-generated sound
+        freq_index = int((frequency - 1000) / 10)
+        freq_index = min(len(self.sound_samples) - 1, max(0, freq_index))
+        sound = self.sound_samples[freq_index]
+        sound.set_volume(volume)
 
         # Play the sound
-        sound.play()
+        self.sound_channel.play(sound)
+
+    def pre_generate_sounds(self):
+        # Pre-generate sounds for frequencies between 1000 Hz and 1500 Hz
+        self.sound_samples = []
+        sample_rate = 22050
+        duration = 0.2  # Longer duration for smoother sound
+        for freq in range(1000, 1501, 10):
+            t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+            samples = (np.sin(2 * np.pi * freq * t)).astype(np.float32)
+            sound_array = np.stack([samples, samples], axis=-1)  # Stereo sound
+            sound = pygame.sndarray.make_sound((sound_array * 32767).astype(np.int16))
+            self.sound_samples.append(sound)
+
+    def process_heard_sounds(self, neuron_states: np.ndarray):
+        # Adjust the hearing neuron based on heard sounds
+        if self.heard_sounds:
+            # Average the frequencies of the heard sounds
+            avg_frequency = np.mean(self.heard_sounds)
+            # Map frequency back to neuron activation
+            neuron_activation = ((avg_frequency - 1000) / 500) * 2 - 1  # Map from [1000,1500] Hz to [-1,1]
+            # Update the hearing neuron state
+            neuron_states[self.hearing_neuron_index] = neuron_activation
+            # Clear the heard sounds
+            self.heard_sounds = []
+
+    def hear_sound(self, frequency: float):
+        self.heard_sounds.append(frequency)
 
 class EnhancedBug(Bug):
     def __init__(self, *args, **kwargs):
@@ -456,28 +481,58 @@ class EnhancedBug(Bug):
         )
         self.learning_rate = 0.1
         
-    def think_and_act(self, environment_input, other_bugs, webcam_input):
-        latent_vector, talk_message, echo_trails = super().think_and_act(
-            environment_input, other_bugs, webcam_input
-        )
-        
+    def think_and_act(self, environment_input, other_bugs, webcam_input, mouse_position):
+        # Remove state transfer when bugs overlap (no longer calling super().think_and_act)
+        self.avoid_others(other_bugs)
+        vision_signal = self.detect_in_vision(other_bugs, webcam_input)
+        combined_input = environment_input + vision_signal
+        latent_vector = self.processor.process_and_update(combined_input)
+        oscillatory_energy = np.mean([abs(neuron.output) for neuron in self.processor.brain.neurons])
+
+        # Adjust speed based on EEG data
+        eeg_activity = np.mean(combined_input)
+        self.speed = 2.0 + eeg_activity * 5.0  # Speed ranges from 2 to 7
+
+        if self.state == "exploring":
+            self.direction += random.uniform(-15, 15) * oscillatory_energy
+        elif self.state == "avoiding":
+            self.direction += random.uniform(-30, 30) * oscillatory_energy
+
+        self.direction %= 360
+        self.move()
+        self.update_particles()
+
         t = time.time()
         loss = self.brain_coupler.train_step(
             torch.FloatTensor(environment_input).unsqueeze(0),
             t
         )
-        
+
         brain_output = self.small_brain(
             torch.FloatTensor(latent_vector),
             t
         )
-        
+
         combined_output = (
             latent_vector * (1 - self.learning_rate) + 
             brain_output.detach().numpy() * self.learning_rate
         )
-        
-        return combined_output, talk_message, echo_trails
+
+        neuron_states = np.array([neuron.output for neuron in self.processor.brain.neurons])
+
+        current_time = time.time()
+        # Produce sound only if enough time has passed
+        if current_time - self.last_sound_time > self.sound_interval:
+            # Generate sound based on sound neuron
+            self.generate_sound(neuron_states[self.sound_neuron_index], mouse_position)
+            self.last_sound_time = current_time
+            # Randomize the next sound interval
+            self.sound_interval = random.uniform(1.0, 5.0)
+
+        # Process heard sounds
+        self.process_heard_sounds(neuron_states)
+
+        return combined_output, "", self.echo_trails
 
 class EEGBugSimulatorApp:
     def __init__(self, root: tk.Tk):
@@ -541,7 +596,7 @@ class EEGBugSimulatorApp:
         neurons_frame = ttk.LabelFrame(self.config_frame, text="3. Configure Wave Neurons per Bug", padding=10)
         neurons_frame.pack(fill=tk.X, padx=20, pady=10)
         ttk.Label(neurons_frame, text="Number of Wave Neurons:").grid(row=0, column=0, sticky='w', pady=5)
-        self.neurons_spinbox = ttk.Spinbox(neurons_frame, from_=1, to=100, increment=1, textvariable=self.num_waveneurons, width=5)
+        self.neurons_spinbox = ttk.Spinbox(neurons_frame, from_=1, to=1500, increment=1, textvariable=self.num_waveneurons, width=5)
         self.neurons_spinbox.grid(row=0, column=1, sticky='w', pady=5, padx=(5,0))
 
         self.start_button = ttk.Button(self.config_frame, text="Start Simulation", command=self.start_simulation, state='disabled')
@@ -558,20 +613,21 @@ class EEGBugSimulatorApp:
         self.canvas_height = 600
         self.canvas = tk.Canvas(self.main_frame, width=self.canvas_width, height=self.canvas_height, bg="black")
         self.canvas.pack(side=tk.LEFT, padx=10, pady=10)
+        self.canvas.bind("<Motion>", self.update_mouse_position)
 
         self.sidebar = tk.Frame(self.main_frame, width=300, bg="grey")
         self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
-
-        self.discussion_text = tk.Text(self.sidebar, wrap=tk.WORD, bg="lightgrey", state=tk.DISABLED)
-        self.discussion_text.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
 
         self.cap = None
         self.background_image = None
         self.bugs = []
         self.simulation_running = False
+        self.mouse_position = (0, 0)
 
         # Create control panel
         self.create_control_panel()
+        # Create heatmap display
+        self.create_heatmap_display()
 
     def create_control_panel(self):
         control_frame = ttk.LabelFrame(self.sidebar, text="Control Panel", padding=10)
@@ -585,36 +641,14 @@ class EEGBugSimulatorApp:
         self.coupling_scale = ttk.Scale(control_frame, from_=0.0, to=1.0, orient=tk.HORIZONTAL, variable=self.coupling_strength)
         self.coupling_scale.pack(fill=tk.X)
 
-        ttk.Button(control_frame, text="Show Neural Activity", command=self.show_neural_activity).pack(pady=10)
+    def create_heatmap_display(self):
+        self.heatmap_frame = tk.Frame(self.sidebar)
+        self.heatmap_frame.pack(fill=tk.BOTH, expand=True)
+        self.heatmap_canvases = {}
+        self.heatmap_figures = {}
 
-    def show_neural_activity(self):
-        self.neural_window = tk.Toplevel(self.root)
-        self.neural_window.title("Neural Activity")
-        num_bugs = len(self.bugs)
-        cols = 2
-        rows = (num_bugs + 1) // cols
-        self.neural_fig, self.neural_axes = plt.subplots(rows, cols, figsize=(6, 4))
-        self.neural_canvas = FigureCanvasTkAgg(self.neural_fig, master=self.neural_window)
-        self.neural_canvas.get_tk_widget().pack()
-        self.update_neural_activity()
-
-    def update_neural_activity(self):
-        if not self.simulation_running:
-            return
-        axes = self.neural_axes.flatten()
-        for ax in axes:
-            ax.clear()
-            ax.axis('off')
-        for ax, bug in zip(axes, self.bugs):
-            neuron_states = np.array([neuron.output for neuron in bug.processor.brain.neurons])
-            size = int(np.ceil(np.sqrt(len(neuron_states))))
-            data = np.zeros((size, size))
-            data.flat[:len(neuron_states)] = neuron_states
-            im = ax.imshow(data, cmap='viridis', vmin=-1, vmax=1)
-            ax.set_title(bug.name)
-            ax.axis('off')
-        self.neural_canvas.draw()
-        self.root.after(100, self.update_neural_activity)
+    def update_mouse_position(self, event):
+        self.mouse_position = (event.x, event.y)
 
     def toggle_input_option(self):
         option = self.input_option.get()
@@ -646,112 +680,6 @@ class EEGBugSimulatorApp:
         else:
             self.start_button.config(state='disabled')
 
-    def draw_brain_state(self, bug: EnhancedBug):
-        x, y = bug.position
-        for i, state in enumerate(bug.small_brain.state):
-            radius = (i + 1) * 3
-            intensity = abs(float(state))
-            color = f"#{int(255*intensity):02x}{int(255*intensity):02x}ff"
-            self.canvas.create_oval(
-                x - radius, y - radius,
-                x + radius, y + radius,
-                outline=color, width=1
-            )
-
-    def draw_coupling(self, bug1: EnhancedBug, bug2: EnhancedBug):
-        x1, y1 = bug1.position
-        x2, y2 = bug2.position
-        sync = float(torch.cosine_similarity(
-            bug1.small_brain.state.unsqueeze(0),
-            bug2.small_brain.state.unsqueeze(0),
-            dim=1
-        ))
-        if sync > 0.7:
-            self.canvas.create_line(x1, y1, x2, y2, 
-                fill='cyan', width=1, dash=(5,5))
-
-    def draw_vision_cone(self, bug: Bug):
-        x, y = bug.position
-        vision_start = bug.direction - bug.vision_angle / 2
-        vision_end = bug.direction + bug.vision_angle / 2
-
-        end1 = (
-            x + cos(radians(vision_start)) * bug.vision_range,
-            y + sin(radians(vision_start)) * bug.vision_range
-        )
-        end2 = (
-            x + cos(radians(vision_end)) * bug.vision_range,
-            y + sin(radians(vision_end)) * bug.vision_range
-        )
-
-        self.canvas.create_polygon(
-            [x, y, end1[0], end1[1], end2[0], end2[1]],
-            fill=bug.color, stipple="gray25", outline=""
-        )
-
-    def create_help_tab(self):
-        self.help_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.help_frame, text='Help')
-
-        help_text = """
-        EEG Bug Simulator
-
-        This simulator combines EEG data processing with neural oscillators to create interactive agents.
-
-        Key Features:
-        - EEG Model Integration: Processes brain activity patterns
-        - SmallBrain System: Mini neural networks that learn from EEG patterns
-        - Wave-based Communication: Bugs share internal states
-        - Dynamic Visualization: See neural activity and interactions
-        - Neural Activity Window: View bugs' neural heatmaps
-        - Particle Effects: Visualize bug interactions
-        - Audio Language: Bugs produce evolving sounds
-        - Control Panel: Adjust simulation parameters in real-time
-
-        Usage:
-        1. Select trained EEG model (.pth file)
-        2. Choose input source (webcam/image)
-        3. Configure number of wave neurons
-        4. Start simulation
-
-        Brain States:
-        - Heatmaps display neural activity
-        - Cyan lines indicate neural synchronization
-        - Trails show movement history
-        - Particle effects when bugs interact
-        """
-
-        help_label = ttk.Label(self.help_frame, text=help_text, wraplength=700, justify='left')
-        help_label.pack(padx=20, pady=20)
-
-    def draw_state_indicator(self, bug: Bug):
-        x, y = bug.position
-        state_color = {
-            "exploring": "green",
-            "avoiding": "red",
-            "seeking": "blue"
-        }
-        indicator_color = state_color.get(bug.state, "white")
-        self.canvas.create_rectangle(
-            x - bug.bug_radius, y + bug.bug_radius + 5,
-            x + bug.bug_radius, y + bug.bug_radius + 15,
-            fill=indicator_color, outline=""
-        )
-        self.canvas.create_text(
-            x, y + bug.bug_radius + 10,
-            text=bug.state, fill="white", font=("Helvetica", 8)
-        )
-
-    def draw_echo(self, echo: dict):
-        x, y = echo['position']
-        thickness = echo['thickness']
-        spread = echo['spread']
-        self.canvas.create_oval(
-            x - spread * 10, y - spread * 10,
-            x + spread * 10, y + spread * 10,
-            outline=self.bugs[0].color, width=thickness, fill=''
-        )
-
     def draw_particles(self, bug: Bug):
         for particle in bug.particles:
             x, y = particle['position']
@@ -761,14 +689,6 @@ class EEGBugSimulatorApp:
                 x - 2, y - 2, x + 2, y + 2,
                 fill=color, outline=""
             )
-
-    def append_discussion(self, messages: List[str]):
-        self.discussion_text.config(state=tk.NORMAL)
-        for msg in messages:
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            self.discussion_text.insert(tk.END, f"[{timestamp}] {msg}\n")
-        self.discussion_text.see(tk.END)
-        self.discussion_text.config(state=tk.DISABLED)
 
     def start_simulation(self):
         if self.simulation_running:
@@ -817,7 +737,29 @@ class EEGBugSimulatorApp:
             self.bugs.append(bug)
 
         self.simulation_running = True
+        self.create_bug_heatmaps()
         self.run_simulation()
+
+    def create_bug_heatmaps(self):
+        for bug in self.bugs:
+            fig, ax = plt.subplots(figsize=(2, 2), dpi=50)
+            canvas = FigureCanvasTkAgg(fig, master=self.heatmap_frame)
+            canvas.get_tk_widget().pack()
+            self.heatmap_canvases[bug.name] = canvas
+            self.heatmap_figures[bug.name] = (fig, ax)
+
+    def update_bug_heatmaps(self):
+        for bug in self.bugs:
+            fig, ax = self.heatmap_figures[bug.name]
+            ax.clear()
+            neuron_states = np.array([neuron.output for neuron in bug.processor.brain.neurons])
+            size = int(np.ceil(np.sqrt(len(neuron_states))))
+            data = np.zeros((size, size))
+            data.flat[:len(neuron_states)] = neuron_states
+            ax.imshow(data, cmap='viridis', vmin=-1, vmax=1)
+            ax.set_title(bug.name, fontsize=8)
+            ax.axis('off')
+            self.heatmap_canvases[bug.name].draw()
 
     def run_simulation(self):
         if not self.simulation_running:
@@ -845,10 +787,9 @@ class EEGBugSimulatorApp:
         environment_input = np.random.rand(5, 7)
 
         # Update and draw bugs
-        talk_messages = []
         for bug in self.bugs:
-            latent_vector, talk_message, echo_trails = bug.think_and_act(
-                environment_input, self.bugs, webcam_input
+            latent_vector, _, echo_trails = bug.think_and_act(
+                environment_input, self.bugs, webcam_input, self.mouse_position
             )
             x, y = bug.position
 
@@ -879,15 +820,7 @@ class EEGBugSimulatorApp:
                 fill=bug.color, outline=""
             )
 
-            self.draw_vision_cone(bug)
-            self.draw_state_indicator(bug)
             self.draw_particles(bug)
-
-            if isinstance(bug, EnhancedBug):
-                self.draw_brain_state(bug)
-
-            if talk_message:
-                talk_messages.append(talk_message)
 
             for echo in echo_trails.copy():
                 if echo['remaining'] > 0:
@@ -896,17 +829,26 @@ class EEGBugSimulatorApp:
                 else:
                     bug.echo_trails.remove(echo)
 
-        # Draw coupling between enhanced bugs
-        enhanced_bugs = [b for b in self.bugs if isinstance(b, EnhancedBug)]
-        for i, bug1 in enumerate(enhanced_bugs):
-            for bug2 in enhanced_bugs[i+1:]:
-                self.draw_coupling(bug1, bug2)
+        # Simulate hearing sounds from nearby bugs
+        for bug in self.bugs:
+            for other_bug in self.bugs:
+                if bug != other_bug and bug.is_near(other_bug):
+                    if other_bug.sound_frequency is not None:
+                        bug.hear_sound(other_bug.sound_frequency)
 
-        if talk_messages:
-            self.append_discussion(talk_messages)
+        self.update_bug_heatmaps()
 
         self.root.after(50, self.run_simulation)
 
+    def draw_echo(self, echo: dict):
+        x, y = echo['position']
+        thickness = echo['thickness']
+        spread = echo['spread']
+        self.canvas.create_oval(
+            x - spread * 10, y - spread * 10,
+            x + spread * 10, y + spread * 10,
+            outline='white', width=thickness, fill=''
+        )
 
     def on_close(self):
         if self.cap is not None:
@@ -914,6 +856,41 @@ class EEGBugSimulatorApp:
         self.simulation_running = False
         self.root.destroy()
         pygame.quit()
+
+    def create_help_tab(self):
+        self.help_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.help_frame, text='Help')
+
+        help_text = """
+        EEG Bug Simulator
+
+        This simulator combines EEG data processing with neural oscillators to create interactive agents.
+
+        Key Features:
+        - EEG Model Integration: Processes brain activity patterns
+        - SmallBrain System: Mini neural networks that learn from EEG patterns
+        - Wave-based Communication: Bugs share internal states
+        - Dynamic Visualization: See neural activity and interactions
+        - Neural Activity Heatmaps: View bugs' neural heatmaps in the sidebar
+        - Particle Effects: Visualize bug interactions
+        - Audio Language: Bugs produce evolving sounds
+        - Control Panel: Adjust simulation parameters in real-time
+        - Audio Zoom: Sound volume adjusts based on mouse position
+
+        Usage:
+        1. Select trained EEG model (.pth file)
+        2. Choose input source (webcam/image)
+        3. Configure number of wave neurons
+        4. Start simulation
+
+        Brain States:
+        - Heatmaps display neural activity
+        - Trails show movement history
+        - Particle effects when bugs interact
+        """
+
+        help_label = ttk.Label(self.help_frame, text=help_text, wraplength=700, justify='left')
+        help_label.pack(padx=20, pady=20)
 
 if __name__ == "__main__":
     root = tk.Tk()
