@@ -10,10 +10,15 @@ from math import cos, sin, radians, sqrt, atan2, degrees
 import cv2
 from typing import List, Tuple, Dict
 import random
-import logging
-from datetime import datetime
 import threading
 import time
+from datetime import datetime
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import pygame  # For audio playback
+
+# Initialize pygame mixer for audio
+pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
 
 # Configuration and Parameters
 frequency_bands = {
@@ -31,12 +36,6 @@ eeg_batch_size = 64
 eeg_epochs = 50
 learning_rate = 1e-3
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-logging.basicConfig(
-    filename='eeg_bug_simulator.log',
-    level=logging.INFO,
-    format='%(asctime)s:%(levelname)s:%(message)s'
-)
 
 def set_seed(seed=42):
     np.random.seed(seed)
@@ -270,8 +269,7 @@ class Bug:
         self.genetic_traits = self.initialize_genetic_traits()
         self.echo_trails = []
         self.num_waveneurons = num_waveneurons
-
-# Continuing the Bug class implementation:
+        self.particles = []  # For particle effects
 
     def initialize_genetic_traits(self) -> dict:
         return {
@@ -288,7 +286,7 @@ class Bug:
         new_y = max(self.bug_radius, min(600 - self.bug_radius, self.position[1] + dy))
         self.position = [new_x, new_y]
         self.trail.append(tuple(self.position))
-        if len(self.trail) > 20:
+        if len(self.trail) > 50:
             self.trail.pop(0)
 
     def avoid_others(self, other_bugs: List['Bug']):
@@ -305,6 +303,8 @@ class Bug:
                 ))
                 self.direction += 180 + random.uniform(-30, 30)
                 collision = True
+                # Generate particle effect
+                self.create_particles()
         if collision:
             self.state = "avoiding"
             self.can_talk = True
@@ -341,12 +341,16 @@ class Bug:
     def generate_talk(self, neuron_states: np.ndarray) -> str:
         min_val = np.min(neuron_states)
         max_val = np.max(neuron_states)
+        # Handle the case where all neuron_states are the same
         if max_val - min_val == 0:
             normalized_states = np.zeros_like(neuron_states)
         else:
             normalized_states = (neuron_states - min_val) / (max_val - min_val)
-        
+        # Ensure normalized_states are within [0,1]
+        normalized_states = np.clip(normalized_states, 0, 1)
         ascii_codes = (normalized_states * (126 - 32) + 32).astype(int)
+        # Ensure ascii_codes are within valid ASCII range
+        ascii_codes = np.clip(ascii_codes, 32, 126)
         ascii_chars = ''.join([chr(code) for code in ascii_codes])
         return ascii_chars[:20]
 
@@ -364,6 +368,29 @@ class Bug:
         }
         self.echo_trails.append(echo)
 
+    def create_particles(self):
+        for _ in range(10):
+            particle = {
+                'position': self.position.copy(),
+                'velocity': [random.uniform(-2, 2), random.uniform(-2, 2)],
+                'life': random.randint(5, 15)
+            }
+            self.particles.append(particle)
+
+    def update_particles(self):
+        for particle in self.particles.copy():
+            particle['position'][0] += particle['velocity'][0]
+            particle['position'][1] += particle['velocity'][1]
+            particle['life'] -= 1
+            if particle['life'] <= 0:
+                self.particles.remove(particle)
+
+    def is_near(self, other_bug, threshold=50):
+        dx = self.position[0] - other_bug.position[0]
+        dy = self.position[1] - other_bug.position[1]
+        distance = sqrt(dx**2 + dy**2)
+        return distance < threshold
+
     def think_and_act(self, environment_input: np.ndarray, other_bugs: List['Bug'], 
                      webcam_input: np.ndarray) -> Tuple[np.ndarray, str, List[dict]]:
         self.avoid_others(other_bugs)
@@ -372,6 +399,10 @@ class Bug:
         latent_vector = self.processor.process_and_update(combined_input)
         oscillatory_energy = np.mean([abs(neuron.output) for neuron in self.processor.brain.neurons])
 
+        # Adjust speed based on EEG data
+        eeg_activity = np.mean(combined_input)
+        self.speed = 2.0 + eeg_activity * 5.0  # Speed ranges from 2 to 7
+
         if self.state == "exploring":
             self.direction += random.uniform(-15, 15) * oscillatory_energy
         elif self.state == "avoiding":
@@ -379,6 +410,7 @@ class Bug:
 
         self.direction %= 360
         self.move()
+        self.update_particles()
 
         neuron_states = np.array([neuron.output for neuron in self.processor.brain.neurons])
 
@@ -390,12 +422,32 @@ class Bug:
         if self.generate_draw_command(neuron_states):
             self.create_echo_trace(self.position[0], self.position[1])
 
+        # Generate sound based on neuron activity
+        self.generate_sound(neuron_states)
+
         return latent_vector, talk_message, self.echo_trails
+
+    def generate_sound(self, neuron_states: np.ndarray):
+        avg_activation = np.mean(neuron_states)
+        frequency = 2200 + avg_activation * 2200  # Map to 2200-4400 Hz
+
+        # Generate a tone
+        sample_rate = 22050
+        duration = 0.1  # seconds
+        samples = (np.sin(2 * np.pi * np.arange(sample_rate * duration) * frequency / sample_rate)).astype(np.float32)
+
+        # Convert to sound object
+        sound_array = np.stack([samples, samples], axis=-1)  # Stereo sound
+        sound = pygame.sndarray.make_sound((sound_array * 32767).astype(np.int16))
+
+        # Play the sound
+        sound.play()
+
 class EnhancedBug(Bug):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.small_brain = SmallBrain(
-            num_neurons=16,
+            num_neurons=self.num_waveneurons,
             latent_dim=64
         )
         self.brain_coupler = BrainCoupler(
@@ -439,6 +491,9 @@ class EEGBugSimulatorApp:
         self.background_image_path = tk.StringVar()
         self.num_waveneurons = tk.IntVar(value=16)
         self.simulation_running = False
+
+        self.bug_speed = tk.DoubleVar(value=5.0)
+        self.coupling_strength = tk.DoubleVar(value=0.1)
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -514,17 +569,64 @@ class EEGBugSimulatorApp:
         self.background_image = None
         self.bugs = []
         self.simulation_running = False
+
+        # Create control panel
+        self.create_control_panel()
+
+    def create_control_panel(self):
+        control_frame = ttk.LabelFrame(self.sidebar, text="Control Panel", padding=10)
+        control_frame.pack(pady=10, fill=tk.X)
+
+        ttk.Label(control_frame, text="Bug Speed").pack()
+        self.speed_scale = ttk.Scale(control_frame, from_=1, to=10, orient=tk.HORIZONTAL, variable=self.bug_speed)
+        self.speed_scale.pack(fill=tk.X)
+
+        ttk.Label(control_frame, text="Coupling Strength").pack()
+        self.coupling_scale = ttk.Scale(control_frame, from_=0.0, to=1.0, orient=tk.HORIZONTAL, variable=self.coupling_strength)
+        self.coupling_scale.pack(fill=tk.X)
+
+        ttk.Button(control_frame, text="Show Neural Activity", command=self.show_neural_activity).pack(pady=10)
+
+    def show_neural_activity(self):
+        self.neural_window = tk.Toplevel(self.root)
+        self.neural_window.title("Neural Activity")
+        num_bugs = len(self.bugs)
+        cols = 2
+        rows = (num_bugs + 1) // cols
+        self.neural_fig, self.neural_axes = plt.subplots(rows, cols, figsize=(6, 4))
+        self.neural_canvas = FigureCanvasTkAgg(self.neural_fig, master=self.neural_window)
+        self.neural_canvas.get_tk_widget().pack()
+        self.update_neural_activity()
+
+    def update_neural_activity(self):
+        if not self.simulation_running:
+            return
+        axes = self.neural_axes.flatten()
+        for ax in axes:
+            ax.clear()
+            ax.axis('off')
+        for ax, bug in zip(axes, self.bugs):
+            neuron_states = np.array([neuron.output for neuron in bug.processor.brain.neurons])
+            size = int(np.ceil(np.sqrt(len(neuron_states))))
+            data = np.zeros((size, size))
+            data.flat[:len(neuron_states)] = neuron_states
+            im = ax.imshow(data, cmap='viridis', vmin=-1, vmax=1)
+            ax.set_title(bug.name)
+            ax.axis('off')
+        self.neural_canvas.draw()
+        self.root.after(100, self.update_neural_activity)
+
     def toggle_input_option(self):
-            option = self.input_option.get()
-            if option == 1:
-                self.webcam_spinbox.config(state='normal')
-                self.background_image_path.set('')
-                self.image_entry.config(state='disabled')
-                self.image_browse_button.config(state='disabled')
-            elif option == 2:
-                self.webcam_spinbox.config(state='disabled')
-                self.image_entry.config(state='normal')
-                self.image_browse_button.config(state='normal')
+        option = self.input_option.get()
+        if option == 1:
+            self.webcam_spinbox.config(state='normal')
+            self.background_image_path.set('')
+            self.image_entry.config(state='disabled')
+            self.image_browse_button.config(state='disabled')
+        elif option == 2:
+            self.webcam_spinbox.config(state='disabled')
+            self.image_entry.config(state='normal')
+            self.image_browse_button.config(state='normal')
 
     def browse_model(self):
         file_path = filedialog.askopenfilename(title="Select EEG Autoencoder Model", filetypes=[("PyTorch Model", "*.pth")])
@@ -561,7 +663,8 @@ class EEGBugSimulatorApp:
         x2, y2 = bug2.position
         sync = float(torch.cosine_similarity(
             bug1.small_brain.state.unsqueeze(0),
-            bug2.small_brain.state.unsqueeze(0)
+            bug2.small_brain.state.unsqueeze(0),
+            dim=1
         ))
         if sync > 0.7:
             self.canvas.create_line(x1, y1, x2, y2, 
@@ -600,17 +703,22 @@ class EEGBugSimulatorApp:
         - SmallBrain System: Mini neural networks that learn from EEG patterns
         - Wave-based Communication: Bugs share internal states
         - Dynamic Visualization: See neural activity and interactions
+        - Neural Activity Window: View bugs' neural heatmaps
+        - Particle Effects: Visualize bug interactions
+        - Audio Language: Bugs produce evolving sounds
+        - Control Panel: Adjust simulation parameters in real-time
 
         Usage:
         1. Select trained EEG model (.pth file)
         2. Choose input source (webcam/image)
         3. Configure number of wave neurons
         4. Start simulation
-        
+
         Brain States:
-        - Blue rings show neural activity
+        - Heatmaps display neural activity
         - Cyan lines indicate neural synchronization
         - Trails show movement history
+        - Particle effects when bugs interact
         """
 
         help_label = ttk.Label(self.help_frame, text=help_text, wraplength=700, justify='left')
@@ -644,6 +752,16 @@ class EEGBugSimulatorApp:
             outline=self.bugs[0].color, width=thickness, fill=''
         )
 
+    def draw_particles(self, bug: Bug):
+        for particle in bug.particles:
+            x, y = particle['position']
+            life_ratio = particle['life'] / 15
+            color = f"#{int(255*life_ratio):02x}{int(255*life_ratio):02x}00"
+            self.canvas.create_oval(
+                x - 2, y - 2, x + 2, y + 2,
+                fill=color, outline=""
+            )
+
     def append_discussion(self, messages: List[str]):
         self.discussion_text.config(state=tk.NORMAL)
         for msg in messages:
@@ -651,54 +769,55 @@ class EEGBugSimulatorApp:
             self.discussion_text.insert(tk.END, f"[{timestamp}] {msg}\n")
         self.discussion_text.see(tk.END)
         self.discussion_text.config(state=tk.DISABLED)
+
     def start_simulation(self):
-            if self.simulation_running:
-                messagebox.showwarning("Simulation Running", "The simulation is already running.")
+        if self.simulation_running:
+            messagebox.showwarning("Simulation Running", "The simulation is already running.")
+            return
+
+        if not self.model_path.get():
+            messagebox.showwarning("No Model Selected", "Please select an EEG autoencoder model before starting.")
+            return
+
+        # Initialize input source
+        if self.input_option.get() == 1:
+            webcam_idx = self.webcam_index.get()
+            self.cap = cv2.VideoCapture(webcam_idx)
+            if not self.cap.isOpened():
+                messagebox.showerror("Webcam Error", f"Cannot open webcam with index {webcam_idx}.")
                 return
-
-            if not self.model_path.get():
-                messagebox.showwarning("No Model Selected", "Please select an EEG autoencoder model before starting.")
+        else:
+            bg_path = self.background_image_path.get()
+            if not os.path.exists(bg_path):
+                messagebox.showerror("Image Not Found", f"Background image not found at {bg_path}.")
                 return
+            self.background_image = Image.open(bg_path).resize((self.canvas_width, self.canvas_height))
+            self.background_photo = ImageTk.PhotoImage(self.background_image)
 
-            # Initialize input source
-            if self.input_option.get() == 1:
-                webcam_idx = self.webcam_index.get()
-                self.cap = cv2.VideoCapture(webcam_idx)
-                if not self.cap.isOpened():
-                    messagebox.showerror("Webcam Error", f"Cannot open webcam with index {webcam_idx}.")
-                    return
-            else:
-                bg_path = self.background_image_path.get()
-                if not os.path.exists(bg_path):
-                    messagebox.showerror("Image Not Found", f"Background image not found at {bg_path}.")
-                    return
-                self.background_image = Image.open(bg_path).resize((self.canvas_width, self.canvas_height))
-                self.background_photo = ImageTk.PhotoImage(self.background_image)
+        # Initialize processor and bugs
+        processor = DynamicWaveEEGProcessor(
+            eeg_model_path=self.model_path.get(),
+            latent_dim=latent_dim,
+            num_neurons=self.num_waveneurons.get()
+        )
 
-            # Initialize processor and bugs
-            processor = DynamicWaveEEGProcessor(
-                eeg_model_path=self.model_path.get(),
-                latent_dim=latent_dim,
-                num_neurons=self.num_waveneurons.get()
+        bug_names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+        self.bugs = []
+        for name in bug_names:
+            color = f"#{random.randint(0, 0xFFFFFF):06x}"
+            bug = EnhancedBug(
+                canvas_width=self.canvas_width,
+                canvas_height=self.canvas_height,
+                color=color,
+                name=name,
+                processor=processor,
+                bug_radius=20,
+                num_waveneurons=self.num_waveneurons.get()
             )
+            self.bugs.append(bug)
 
-            bug_names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
-            self.bugs = []
-            for name in bug_names:
-                color = f"#{random.randint(0, 0xFFFFFF):06x}"
-                bug = EnhancedBug(
-                    canvas_width=self.canvas_width,
-                    canvas_height=self.canvas_height,
-                    color=color,
-                    name=name,
-                    processor=processor,
-                    bug_radius=20,
-                    num_waveneurons=self.num_waveneurons.get()
-                )
-                self.bugs.append(bug)
-
-            self.simulation_running = True
-            self.run_simulation()
+        self.simulation_running = True
+        self.run_simulation()
 
     def run_simulation(self):
         if not self.simulation_running:
@@ -733,8 +852,26 @@ class EEGBugSimulatorApp:
             )
             x, y = bug.position
 
+            # Trail customization based on neuron states
+            neuron_states = np.array([neuron.output for neuron in bug.processor.brain.neurons])
+            avg_activation = np.mean(neuron_states)
+            # Ensure avg_activation is within [-1, 1]
+            avg_activation = np.clip(avg_activation, -1, 1)
+
+            trail_color_intensity = int(255 * (avg_activation + 1) / 2)
+            trail_color_intensity = max(0, min(255, trail_color_intensity))
+
+            inverse_intensity = 255 - trail_color_intensity
+            inverse_intensity = max(0, min(255, inverse_intensity))
+
+            trail_color = f"#{trail_color_intensity:02x}00{inverse_intensity:02x}"
+
+            # Adjust trail thickness
+            trail_thickness = 1 + 3 * (avg_activation + 1) / 2
+            trail_thickness = max(0.5, min(4.0, trail_thickness))
+
             if len(bug.trail) > 1:
-                self.canvas.create_line(bug.trail, fill=bug.color, width=2, smooth=True)
+                self.canvas.create_line(bug.trail, fill=trail_color, width=trail_thickness, smooth=True)
 
             self.canvas.create_oval(
                 x - bug.bug_radius, y - bug.bug_radius,
@@ -744,6 +881,7 @@ class EEGBugSimulatorApp:
 
             self.draw_vision_cone(bug)
             self.draw_state_indicator(bug)
+            self.draw_particles(bug)
 
             if isinstance(bug, EnhancedBug):
                 self.draw_brain_state(bug)
@@ -769,10 +907,13 @@ class EEGBugSimulatorApp:
 
         self.root.after(50, self.run_simulation)
 
+
     def on_close(self):
         if self.cap is not None:
             self.cap.release()
+        self.simulation_running = False
         self.root.destroy()
+        pygame.quit()
 
 if __name__ == "__main__":
     root = tk.Tk()
